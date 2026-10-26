@@ -8,6 +8,7 @@ import postRoutes from "./apps/postRoutes.mjs";
 import postsRouter from "./routes/posts.mjs";
 import assignmentsRouter from "./routes/assignments.mjs";
 import authRouter from "./routes/auth.mjs";
+import categoriesRouter from "./routes/categories.mjs";
 import protectUser from "./middlewares/protectUser.mjs";
 import protectAdmin from "./middlewares/protectAdmin.mjs";
 
@@ -29,6 +30,7 @@ app.get("/health", (req, res) => {
 
 app.use("/posts", postRoutes);
 app.use("/posts", postsRouter);
+app.use("/categories", categoriesRouter);
 app.use("/assignments", assignmentsRouter);
 app.use("/auth", authRouter);
 

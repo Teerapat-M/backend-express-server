@@ -1,20 +1,33 @@
 import { Router } from "express";
+import multer from "multer";
 import supabase from "../utils/supabase.mjs";
 import connectionPool from "../utils/db.mjs";
+import protectUser from "../middlewares/protectUser.mjs";
+import { uploadBlogFile } from "../utils/storage.mjs";
+import { validateImageFile } from "../utils/postValidation.mjs";
 
 const authRouter = Router();
+const imageFileUpload = multer({ storage: multer.memoryStorage() }).fields([
+  { name: "imageFile", maxCount: 1 },
+]);
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    name: user.name,
+    role: user.role,
+    profilePic: user.profilePic,
+  };
+}
 
 authRouter.post("/register", async (req, res) => {
   const { email, password, username, name } = req.body;
   try {
-    const usernameCheckQuery = `
-      SELECT * FROM users
-      WHERE username = $1
-    `;
-    const usernameCheckValues = [username];
     const { rows: existingUser } = await connectionPool.query(
-      usernameCheckQuery,
-      usernameCheckValues
+      `SELECT id FROM users WHERE username = $1`,
+      [username]
     );
     if (existingUser.length > 0) {
       return res.status(400).json({ error: "This username is already taken" });
@@ -35,27 +48,21 @@ authRouter.post("/register", async (req, res) => {
         .json({ error: "Failed to create user. Please try again." });
     }
 
-    const supabaseUserId = data.user.id;
-    const query = `
-      INSERT INTO users (id, username, name, role)
-      VALUES ($1, $2, $3, $4)
-      RETURNING *;
-    `;
-    const values = [supabaseUserId, username, name, "user"];
-    const { rows } = await connectionPool.query(query, values);
+    const { rows } = await connectionPool.query(
+      `INSERT INTO users (id, username, name, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [data.user.id, username, name, "user"]
+    );
     res.status(201).json({
       message: "User created successfully",
       user: rows[0],
     });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "An error occurred during registration" });
   }
 });
 
-/**
- * POST /auth/login
- * เข้าสู่ระบบ แล้วคืน access_token ให้ client เก็บไว้ใช้เรียก API ที่ต้อง login
- */
 authRouter.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -79,58 +86,124 @@ authRouter.post("/login", async (req, res) => {
 
     return res.status(200).json({
       message: "User has been signed in successfully",
-      accessToken: data.session.access_token,
+      access_token: data.session.access_token,
       user: data.user,
     });
   } catch {
     return res.status(500).json({
-      message: "Server could not sign in user because of a database connection error",
+      message:
+        "Server could not sign in user because of a database connection error",
     });
   }
 });
 
-/**
- * GET /auth/get-user
- * ดึงข้อมูล user จาก Authorization: Bearer <access_token>
- */
-authRouter.get("/get-user", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
+authRouter.get("/get-user", protectUser, async (req, res) => {
+  return res.status(200).json(publicUser(req.user));
+});
 
-  if (!token) {
-    return res.status(401).json({ error: "Unauthorized: Token missing" });
-  }
+authRouter.put(
+  "/update-profile",
+  imageFileUpload,
+  protectUser,
+  async (req, res) => {
+    const { name, username } = req.body;
+    const file = req.files?.imageFile?.[0];
 
-  try {
-    const { data, error } = await supabase.auth.getUser(token);
-
-    if (error || !data.user) {
-      return res.status(401).json({
-        message: "Unauthorized: Invalid or expired token",
-      });
+    if (name !== undefined) {
+      if (typeof name !== "string" || name.trim() === "" || name.length > 100) {
+        return res.status(400).json({
+          error: "Name cannot be empty or exceed 100 characters",
+        });
+      }
+    }
+    if (username !== undefined) {
+      if (
+        typeof username !== "string" ||
+        username.trim() === "" ||
+        username.length > 50
+      ) {
+        return res.status(400).json({
+          error: "Username cannot be empty or exceed 50 characters",
+        });
+      }
+    }
+    if (file) {
+      const fileError = validateImageFile(file);
+      if (fileError) {
+        return res.status(400).json({ error: fileError });
+      }
+    }
+    if (name === undefined && username === undefined && !file) {
+      return res.status(400).json({ error: "No fields to update provided" });
     }
 
-    return res.status(200).json({
-      id: data.user.id,
-      email: data.user.email,
-      name: data.user.user_metadata?.name || "",
-    });
-  } catch {
-    return res.status(500).json({
-      message: "Server could not get user data because of a database connection error",
-    });
-  }
-});
+    try {
+      let profilePicUrl;
+      if (file) {
+        profilePicUrl = await uploadBlogFile(
+          `profiles/${req.user.id}-${Date.now()}`,
+          file
+        );
+      }
 
-authRouter.put("/reset-password", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  const { oldPassword, newPassword } = req.body;
-  if (!token) {
-    return res.status(401).json({ error: "Unauthorized: Token missing" });
+      if (username && username.trim() !== req.user.username) {
+        const { rows: taken } = await connectionPool.query(
+          `SELECT id FROM users WHERE username = $1 AND id <> $2`,
+          [username.trim(), req.user.id]
+        );
+        if (taken.length > 0) {
+          return res
+            .status(400)
+            .json({ error: "This username is already taken" });
+        }
+      }
+
+      const fields = [];
+      const values = [];
+      let i = 1;
+      if (name !== undefined) {
+        fields.push(`name = $${i++}`);
+        values.push(name.trim());
+      }
+      if (username !== undefined) {
+        fields.push(`username = $${i++}`);
+        values.push(username.trim());
+      }
+      if (profilePicUrl) {
+        fields.push(`profile_pic = $${i++}`);
+        values.push(profilePicUrl);
+      }
+      values.push(req.user.id);
+
+      const { rows } = await connectionPool.query(
+        `UPDATE users SET ${fields.join(", ")} WHERE id = $${i}
+         RETURNING username, name, role, profile_pic`,
+        values
+      );
+
+      return res.status(200).json(
+        publicUser({
+          id: req.user.id,
+          email: req.user.email,
+          username: rows[0].username,
+          name: rows[0].name,
+          role: rows[0].role,
+          profilePic: rows[0].profile_pic,
+        })
+      );
+    } catch {
+      return res.status(500).json({ error: "Failed to update profile" });
+    }
   }
+);
+
+authRouter.put("/reset-password", protectUser, async (req, res) => {
+  const { oldPassword, newPassword } = req.body;
   if (!newPassword) {
     return res.status(400).json({ error: "New password is required" });
   }
   try {
+    const token = req.headers.authorization.split(" ")[1];
     const { data: userData } = await supabase.auth.getUser(token);
     const { error: loginError } = await supabase.auth.signInWithPassword({
       email: userData.user.email,
@@ -146,7 +219,7 @@ authRouter.put("/reset-password", async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
     res.status(200).json({ message: "Password updated successfully" });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: "Internal server error" });
   }
 });

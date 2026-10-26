@@ -54,7 +54,7 @@ function requireNumber(value, fieldName) {
   return { error: `${fieldName} must be a number` };
 }
 
-function validateImageFile(file) {
+export function validateImageFile(file) {
   if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
     return "Please upload a valid image file (JPEG, PNG, GIF, WebP).";
   }
