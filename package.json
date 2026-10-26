@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node app.mjs",
     "dev": "node app.mjs",
-    "test": "node --test tests/posts.validation.test.mjs"
+    "test": "SUPABASE_URL=https://example.supabase.co SUPABASE_ANON_KEY=test node --test tests/*.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.2",
